@@ -32,3 +32,10 @@ Com os dados recolhidos, foram realizadas análises estatísticas e previsões u
 Analisador_serie.py: script em Python que carrega séries temporais a partir de ficheiros Excel, imprime métricas descritivas, avalia correlação e estacionaridade, e gera gráficos para visualização.
 
 Estudo_modelos_previsao.py: script responsável por testar diferentes modelos preditivos e identificar o que melhor se ajusta à previsão do consumo de determinada utility.
+
+## 📜 Licença
+
+Este repositório está licenciado sob os termos da **Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)**.  
+Pode ser utilizado livremente para fins **não comerciais**, desde que seja dada a **devida atribuição** ao autor.  
+Para mais detalhes, consulte o ficheiro [`LICENSE`](./LICENSE) ou visite [https://creativecommons.org/licenses/by-nc/4.0/](https://creativecommons.org/licenses/by-nc/4.0/).
+
