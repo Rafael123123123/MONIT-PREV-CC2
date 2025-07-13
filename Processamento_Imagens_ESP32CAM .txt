@@ -1,0 +1,411 @@
+// Inicializa o cartao SD
+void iniciarSD()
+{
+  // Configura o pino FLASH_GPIO como entrada
+  pinMode(FLASH_GPIO, INPUT);
+
+  // Verifica se o cartao SD ja foi inicializado; caso contrario, inicializa
+  if (!SD_MMC.begin())
+  {
+    Serial.println("Erro ao inicializar o SD.");
+    return; // Sai da funcao em caso de falha
+  }
+  
+  // Confirma a inicializacao bem-sucedida
+  Serial.println("SD inicializado!");
+}
+
+// Desliga o cartao SD
+void desligarSD()
+{
+  // Encerra a comunicacao com o cartao SD
+  SD_MMC.end();
+  delay(200); // Aguarda para garantir a desativacao completa
+
+  // Configura o pino FLASH_GPIO como saida e define nivel baixo
+  pinMode(FLASH_GPIO, OUTPUT);
+  digitalWrite(FLASH_GPIO, 0);
+}
+
+
+// Salva dados no cartao SD
+void guardarNoSD()
+{
+  // Verifica se o SD nao esta ocupado
+  if (!SD_ocupado)
+  {
+    iniciarSD(); // Inicializa o cartao SD
+    SD_ocupado = 1; // Marca o SD como ocupado
+
+    // Cria a pasta "fotos" se nao existir
+    if (!SD_MMC.exists("/fotos"))
+    {
+      if (SD_MMC.mkdir("/fotos"))
+      {
+        Serial.println("Pasta 'fotos' criada com sucesso.");
+      }
+      else
+      {
+        Serial.println("Erro ao criar a pasta 'fotos'.");
+        adicionarAoMonitor("Erro - Falha ao criar a pasta fotos");
+      }
+    }
+
+    // Obtem a data e hora para nomear o arquivo
+    String dateTime = getDateTimeString();
+    dateTime.replace("/", "_"); // Substitui barras por sublinhados
+    Serial.println("Data e Hora: " + dateTime);
+
+    // Define o caminho do arquivo na pasta "fotos"
+    String path = "/fotos/photo_" + dateTime + ".jpg";
+    File file = SD_MMC.open(path, FILE_WRITE); // Abre o arquivo para escrita
+
+    // Verifica se o arquivo foi aberto corretamente
+    if (!file)
+    {
+      Serial.println("Erro ao abrir arquivo no cartao SD");
+      adicionarAoMonitor("Erro - Falha ao abrir pasta fotos");
+      SD_ocupado = 0;
+      return;
+    }
+
+    // Declara variaveis para o buffer JPEG
+    size_t jpg_buf_len = 0;
+    uint8_t *jpg_buf = NULL;
+
+    // Converte o framebuffer RGB565 para JPEG
+    bool converted = fmt2jpg(fb->buf, fb->len, fb->width, fb->height, PIXFORMAT_RGB565, 80, &jpg_buf, &jpg_buf_len);
+
+    if (converted)
+    {
+      // Escreve o buffer JPEG no arquivo
+      file.write(jpg_buf, jpg_buf_len);
+      Serial.println("Foto salva no cartao SD: " + path);
+    }
+    else
+    {
+      Serial.println("Erro ao converter imagem para JPEG");
+      adicionarAoMonitor("Erro - Falha ao converter imagem para JPEG (guardarNoSD)");
+    }
+
+    file.close(); // Fecha o arquivo
+
+    // Libera a memoria alocada para o buffer JPEG
+    if (jpg_buf)
+    {
+      free(jpg_buf);
+    }
+
+    // Verifica se e necessario gravar consumo
+    if (gravarConsumo == 1)
+    {
+      // Adiciona registros ao arquivo "Contagens.txt"
+      bufferSD += registosContagem;
+      File contagensFile = SD_MMC.open("/Contagens.txt", FILE_APPEND); // Abre em modo append
+      if (contagensFile)
+      {
+        contagensFile.println(bufferSD);
+        Serial.println("Registro adicionado ao arquivo 'Contagens.txt'");
+        contagensFile.close();
+        registosContagem = "";
+        bufferSD = "";
+      }
+      else
+      {
+        Serial.println("Erro ao abrir 'Contagens.txt' para escrita.");
+        adicionarAoMonitor("Erro - Erro ao abrir Contagens para escrita");
+      }
+      gravarConsumo = 0; // Reseta a flag
+    }
+
+    desligarSD(); // Desliga o cartao SD
+    SD_ocupado = 0; // Libera o SD
+  }
+  else
+  {
+    // Caso o SD esteja ocupado, armazena no buffer
+    Serial.println("SD esta ocupado");
+    adicionarAoMonitor("Erro - SD esta ocupado (guardarNoSDSensor)");
+    bufferSD += registosContagem;
+  }
+}
+
+// Configura a camera
+void configurarCamera()
+{
+  // Define a configuracao da camera
+  camera_config_t config;
+  config.ledc_channel = LEDC_CHANNEL_0;
+  config.ledc_timer = LEDC_TIMER_0;
+  config.pin_d0 = Y2_GPIO_NUM;
+  config.pin_d1 = Y3_GPIO_NUM;
+  config.pin_d2 = Y4_GPIO_NUM;
+  config.pin_d3 = Y5_GPIO_NUM;
+  config.pin_d4 = Y6_GPIO_NUM;
+  config.pin_d5 = Y7_GPIO_NUM;
+  config.pin_d6 = Y8_GPIO_NUM;
+  config.pin_d7 = Y9_GPIO_NUM;
+  config.pin_xclk = XCLK_GPIO_NUM;
+  config.pin_pclk = PCLK_GPIO_NUM;
+  config.pin_vsync = VSYNC_GPIO_NUM;
+  config.pin_href = HREF_GPIO_NUM;
+  config.pin_sscb_sda = SIOD_GPIO_NUM;
+  config.pin_sscb_scl = SIOC_GPIO_NUM;
+  config.pin_pwdn = PWDN_GPIO_NUM;
+  config.pin_reset = RESET_GPIO_NUM;
+  config.xclk_freq_hz = 20000000; // Frequencia do clock
+  config.pixel_format = PIXFORMAT_RGB565; // Formato de pixel
+
+  // Ajusta parametros com base na presenca de PSRAM
+  if (psramFound())
+  {
+    config.frame_size = FRAMESIZE_QVGA;
+    config.jpeg_quality = 30;
+    config.fb_count = 1;
+  }
+  else
+  {
+    config.frame_size = FRAMESIZE_QVGA;
+    config.jpeg_quality = 12;
+    config.fb_count = 1;
+  }
+
+  // Inicializa a camera
+  esp_err_t err = esp_camera_init(&config);
+  if (err != ESP_OK)
+  {
+    Serial.printf("Falha na inicializacao da camera, erro 0x%x", err);
+    delay(1000);
+    ESP.restart(); // Reinicia em caso de erro
+  }
+}
+
+// Captura uma foto com a camera
+void tirarFoto()
+{
+  if (flashON) digitalWrite(FLASH_GPIO, HIGH); // Liga o flash, se ativado
+  delay(200); // Aguarda estabilizacao
+
+  // Capturas auxiliares para estabilizar a camera
+  for (int i = 0; i <= 2; i++)
+  {
+    camera_fb_t *fb = esp_camera_fb_get(); // Captura frame
+    if (!fb)
+    {
+      Serial.println("Camera capture failed");
+      Serial.println("Restarting the ESP32 CAM.");
+      delay(1000);
+      adicionarAoMonitor("Erro - Falha ao tirar fotos auxiliares");
+    }
+    esp_camera_fb_return(fb); // Libera o buffer
+    delay(50); // Aguarda entre capturas
+  }
+
+  fb = esp_camera_fb_get(); // Captura a foto principal
+  if (!fb)
+  {
+    Serial.println("Erro ao capturar imagem");
+    adicionarAoMonitor("Erro - Falha ao tirar foto primaria");
+  }
+
+  delay(100); // Aguarda processamento
+  if (flashON) digitalWrite(FLASH_GPIO, LOW); // Desliga o flash
+  guardarNoSD(); // Salva a foto no SD
+}
+
+// Converte valores RGB para HSV
+void rgbToHsv(int16_t red, int16_t green, int16_t blue, int16_t &h, int16_t &s, int16_t &v)
+{
+  float r = red / 255.0;
+  float g = green / 255.0;
+  float b = blue / 255.0;
+  float Cmax = fmax(r, fmax(g, b)); // Valor maximo
+  float Cmin = fmin(r, fmin(g, b)); // Valor minimo
+  v = Cmax * 255; // Valor
+  float delta = Cmax - Cmin;
+
+  // Calcula saturacao
+  if (Cmax != 0)
+  {
+    s = (delta / Cmax) * 255;
+  }
+  else
+  {
+    s = 0;
+  }
+
+  // Calcula matiz (hue)
+  if (delta == 0)
+  {
+    h = 0;
+  }
+  else if (r == Cmax)
+  {
+    h = (g - b) / delta;
+  }
+  else if (g == Cmax)
+  {
+    h = 2 + (b - r) / delta;
+  }
+  else
+  {
+    h = 4 + (r - g) / delta;
+  }
+  h *= 60;
+  if (h < 0) h += 360; // Ajusta para valores positivos
+}
+
+
+// Captura uma imagem e aplica mascara HSV
+uint8_t *fotoDestacada()
+{
+  tirarFoto(); // Captura a foto
+  if (fb)
+  {
+    // Aloca buffer para a imagem processada
+    uint8_t *img_buf1 = new (std::nothrow) uint8_t[fb->width * fb->height];
+    if (!img_buf1)
+    {
+      Serial.println("Erro de alocacao de memoria");
+      esp_camera_fb_return(fb);
+      adicionarAoMonitor("Erro - Alocacao de memoria para criar imagem com a mascara falhou");
+      return nullptr;
+    }
+
+    // Aplica mascara HSV para destacar tons vermelhos
+    for (size_t i = 0; i < fb->len; i += 2)
+    {
+      int16_t pixel = (fb->buf[i] << 8) | fb->buf[i + 1];
+      int16_t red = (pixel & 0xF800) >> 8;
+      int16_t green = (pixel & 0x07E0) >> 3;
+      int16_t blue = (pixel & 0x001F) << 3;
+      int16_t h, s, v;
+      rgbToHsv(red, green, blue, h, s, v);
+
+      // Define pixel como 0 (vermelho detectado) ou 255 (outros)
+      img_buf1[i / 2] = (h >= hMin && h <= hMax && s >= sMin && s <= sMax && v >= vMin && v <= vMax) ? 0 : 255;
+    }
+
+    esp_camera_fb_return(fb); // Libera o framebuffer
+    return img_buf1; // Retorna buffer processado
+  }
+
+  // Retorna nullptr em caso de erro
+  Serial.println("Erro - Sem foto para aplicar mascara HSV");
+  adicionarAoMonitor("Erro - Sem foto para aplicar mascara HSV");
+  return nullptr;
+}
+
+// Funcao auxiliar para deteccao de vermelhos nos ROIs
+void complemento_detectarVermelhosNosROIs()
+{
+  imgBuf = fotoDestacada(); // Obtem imagem com mascara HSV
+  if (!imgBuf)
+  {
+    Serial.println("Erro ao aplicar a mascara HSV.");
+    return;
+  }
+  registosContagem = getDateTimeString(); // Inicia registro com data/hora
+  registosContagem += "\tF:";
+}
+
+// Detecta tons vermelhos nos ROIs
+void detectarVermelhosNosROIs()
+{
+  complemento_detectarVermelhosNosROIs(); // Chama funcao auxiliar
+
+  float valores[4] = {0, 0, 0, 0}; // Armazena valores dos ROIs
+
+  // Itera sobre cada ROI
+  for (int roiIndex = 0; roiIndex < roiCount; roiIndex++)
+  {
+    float media = 0;
+    int count = 0;
+    int centerX = rois[roiIndex].centerX;
+    int centerY = rois[roiIndex].centerY;
+    int radius = rois[roiIndex].radius;
+    byte tentativa = 1;
+
+    Serial.print("ROI ");
+    Serial.print(roiIndex);
+    Serial.println(":");
+
+  repetirRoi:
+    // Varre a borda do ROI em um circulo
+    for (int angle = 0; angle < 360; angle++)
+    {
+      int x = centerX + radius * cos(radians(-1 * angle));
+      int y = centerY + radius * sin(radians(angle));
+
+      // Verifica se o pixel esta dentro dos limites da imagem
+      if (x >= 0 && x < fb->width && y >= 0 && y < fb->height)
+      {
+        size_t pixelIndex = y * fb->width + x;
+        if (imgBuf[pixelIndex] == 0) // Pixel vermelho detectado
+        {
+          media += angle;
+          count++;
+        }
+      }
+    }
+
+    // Se nao encontrou vermelho, tenta novamente com ajustes
+    if (media == 0)
+    {
+      adicionarAoMonitor("Erro - ROI " + String(roiIndex) + " nao detectado. Tentativa " + String(tentativa));
+      switch (tentativa)
+      {
+      case 1:
+      case 2:
+      case 3:
+        radius = radius * 0.85; // Reduz raio em 15%
+        tentativa++;
+        goto repetirRoi;
+      case 4:
+        delete[] imgBuf; // Libera buffer
+        complemento_detectarVermelhosNosROIs(); // Tenta nova captura
+        tentativa++;
+        goto repetirRoi;
+      default:
+        adicionarAoMonitor("Erro - Tentativas esgotadas no ROI: " + String(roiIndex));
+        return;
+      }
+    }
+    else
+    {
+      // Calcula angulo medio e corrigido
+      float anguloCru = media / count;
+      Serial.println("Angulo original: " + String(anguloCru));
+      float anguloCorrigido = fmod((anguloCru + 90) + 360, 360);
+      Serial.println("Angulo corrigido: " + String(anguloCorrigido));
+      registosContagem += String(anguloCorrigido * 10 / 360);
+      registosContagem += "  ";
+      gravarConsumo = 1; // Ativa flag para gravacao
+      valores[roiIndex] = anguloCorrigido * 10 / 360;
+    }
+  }
+
+  // Calcula contagem final com base nos valores dos ROIs
+  float contagemFinal = (valores[0] * 0.1 + valores[1] * 0.01 + valores[2] * 0.001 + valores[3] * 0.0001) * 1000;
+  registosContagem += " -> " + String(contagemFinal);
+
+  // Verifica se a diferenca com a contagem anterior e muito grande
+  if ((contagemFinal - contagemFinalAnterior > 100 || contagemFinalAnterior - contagemFinal > 100) && repetirGlobal == 1)
+  {
+    adicionarAoMonitor("Erro - Diferenca para o anterior muito grande. Amostra repetir!");
+    repetirGlobal = 0;
+    detectarVermelhosNosROIs(); // Repete a deteccao
+    repetirGlobal = 1;
+  }
+
+  // Registra a contagem se valida
+  if (repetirGlobal > 0 || primeiraVezContagem == 0)
+  {
+    primeiraVezContagem = 1;
+    contagemFinalAnterior = contagemFinal;
+    Serial.println(registosContagem);
+    adicionarAoMonitor(registosContagem);
+    delete[] imgBuf; // Libera buffer da imagem
+  }
+  repetirGlobal = 1; // Reseta flag global
+}
